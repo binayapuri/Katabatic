@@ -8,6 +8,7 @@ from katabatic.utils.preprocess import (
     preprocess_dataset,
     preprocess_tabular,
     process_numerical_columns,
+    validate_column_names,
 )
 
 
@@ -120,3 +121,45 @@ def test_preprocess_dataset_target_nan_filled_as_missing(tmp_path):
 
 def test_preprocess_tabular_is_alias_for_preprocess_dataset():
     assert preprocess_tabular is preprocess_dataset
+
+
+def test_validate_column_names_accepts_valid_columns():
+    df = pd.DataFrame({"age": [25, 40], "workclass": ["Private", "Gov"], "income": ["<=50K", ">50K"]})
+
+    validate_column_names(
+        df,
+        categorical_cols=["workclass"],
+        continuous_cols=["age"],
+        target_col="income",
+    )
+
+
+def test_validate_column_names_rejects_missing_categorical_col():
+    df = pd.DataFrame({"age": [25, 40], "income": ["<=50K", ">50K"]})
+
+    try:
+        validate_column_names(df, categorical_cols=["wrong_cat"], target_col="income")
+        raise AssertionError("expected ValueError for missing categorical column")
+    except ValueError as e:
+        assert "wrong_cat" in str(e)
+
+
+def test_validate_column_names_rejects_missing_continuous_col():
+    df = pd.DataFrame({"age": [25, 40], "income": ["<=50K", ">50K"]})
+
+    try:
+        validate_column_names(df, continuous_cols=["wrong_cont"], target_col="income")
+        raise AssertionError("expected ValueError for missing continuous column")
+    except ValueError as e:
+        assert "wrong_cont" in str(e)
+
+
+def test_validate_column_names_rejects_overlapping_columns():
+    df = pd.DataFrame({"age": [25, 40], "income": ["<=50K", ">50K"]})
+
+    try:
+        validate_column_names(df, categorical_cols=["age"], continuous_cols=["age"])
+        raise AssertionError("expected ValueError for overlapping column names")
+    except ValueError as e:
+        assert "age" in str(e)
+

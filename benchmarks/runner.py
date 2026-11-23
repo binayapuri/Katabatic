@@ -12,7 +12,11 @@ if REPO_ROOT not in sys.path:
 from katabatic.pipeline.evaluation_pipeline import (  # noqa: E402
     SyntheticEvaluationPipeline,
 )
-from katabatic.utils.preprocess import preprocess_dataset  # noqa: E402
+from katabatic.utils.preprocess import (  # noqa: E402
+    load_and_clean_data,
+    preprocess_dataset,
+    validate_column_names,
+)
 from katabatic.utils.split_dataset import split_dataset  # noqa: E402
 
 
@@ -121,6 +125,14 @@ def preprocess_and_split(config: RunConfig):
             f"Raw dataset not found: {paths['raw_data']}\n"
             f"Place {config.dataset_name}.csv in the raw_data/ folder and re-run."
         )
+
+    raw_df = load_and_clean_data(paths["raw_data"])
+    validate_column_names(
+        raw_df,
+        categorical_cols=config.categorical_cols,
+        continuous_cols=config.continuous_cols,
+        target_col=config.target_col_raw,
+    )
 
     print("\n" + "=" * 60)
     print("STEP 1 — Preprocess")
