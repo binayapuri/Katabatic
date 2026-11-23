@@ -10,53 +10,7 @@ __all__ = [
     "preprocess_dataset",
     "preprocess_tabular",
     "process_numerical_columns",
-    "validate_column_names",
 ]
-
-
-def validate_column_names(
-    df: pd.DataFrame,
-    *,
-    categorical_cols: list[str] | None = None,
-    continuous_cols: list[str] | None = None,
-    target_col: str | None = None,
-) -> None:
-    """Validate configured categorical, continuous, and target column names against a DataFrame.
-
-    Raises a descriptive ValueError before training starts if any configured column is
-    missing from the dataset or if a column is listed as both categorical and continuous.
-    """
-    available = set(df.columns)
-    available_list = list(df.columns)
-
-    cat_list = list(categorical_cols or [])
-    cont_list = list(continuous_cols or [])
-
-    if target_col is not None and target_col not in available:
-        raise ValueError(
-            f"target_col '{target_col}' not found in dataset. "
-            f"Available columns: {available_list}"
-        )
-
-    missing_cat = [c for c in cat_list if c not in available]
-    if missing_cat:
-        raise ValueError(
-            f"categorical_cols not found in dataset: {missing_cat}. "
-            f"Available columns: {available_list}"
-        )
-
-    missing_cont = [c for c in cont_list if c not in available]
-    if missing_cont:
-        raise ValueError(
-            f"continuous_cols not found in dataset: {missing_cont}. "
-            f"Available columns: {available_list}"
-        )
-
-    overlap = sorted(set(cat_list) & set(cont_list))
-    if overlap:
-        raise ValueError(
-            f"Columns cannot be listed in both categorical_cols and continuous_cols: {overlap}"
-        )
 
 
 def load_and_clean_data(file_path: str) -> pd.DataFrame:
@@ -102,12 +56,7 @@ def fill_categorical_nulls(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def preprocess_dataset(
-    file_path: str,
-    output_path: str,
-    target_col: str = None,
-    *,
-    categorical_cols: list[str] | None = None,
-    continuous_cols: list[str] | None = None,
+    file_path: str, output_path: str, target_col: str = None
 ) -> None:
     """
     Load and clean a raw CSV. No encoding is applied — models handle their own
@@ -128,22 +77,16 @@ def preprocess_dataset(
         Path to write the cleaned CSV.
     target_col : str, optional
         Name of the target column. Falls back to the last column if omitted.
-    categorical_cols : list[str], optional
-        Configured categorical column names to validate against the raw CSV.
-    continuous_cols : list[str], optional
-        Configured continuous column names to validate against the raw CSV.
     """
     print(f"Preprocessing: {file_path}")
     df = load_and_clean_data(file_path)
 
-    validate_column_names(
-        df,
-        categorical_cols=categorical_cols,
-        continuous_cols=continuous_cols,
-        target_col=target_col,
-    )
-
     if target_col is not None:
+        if target_col not in df.columns:
+            raise ValueError(
+                f"target_col '{target_col}' not found in dataset. "
+                f"Available columns: {list(df.columns)}"
+            )
         y = df[target_col]
         X = df.drop(columns=[target_col])
     else:
