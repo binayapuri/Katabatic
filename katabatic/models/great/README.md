@@ -90,3 +90,10 @@ synthetic_df = model.sample(
 - **Registry**: Registered in `ModelRegistry` under `"great"` (`supported: True`) and installable via `pip install katabatic[great]`.
 - **Artifact Persistence**: Declares `ARTIFACT_STATE_FILES = ("config.json", "model.pt")`. `_save_artifact_state()` serializes the metadata and schema configuration to `config.json` and saves `model.state_dict()` to `model.pt`; `GReaT.load_from_ref(store, ref)` rehydrates the fitted instance without re-running training.
 - **Evaluation**: `model.evaluate(real_df, target_col=..., test_data=...)` scores the trained model across Katabatic's six evaluation dimensions (Utility/TSTR, Fidelity, Privacy, Diversity, Consistency, and Stability).
+
+## Benchmark Protocol & Runtime Notes
+
+Under the Katabatic benchmark protocol (`benchmarks/protocol.py` / `benchmarks/examples/great/`):
+- **Policy**: `specific` — `llm = "gpt2"`, `seed = 42` (`SEED`, applied to sampling).
+- **Dataset Budgets & Timing Investigation (Deliverable #13)**: `car`, `magic`, `nursery`, and `shuttle` currently run with `epochs = 2`, whereas `run_great_adult.py` sets `epochs = 310` (`batch_size = 128`). Because fine-tuning GPT-2 and rejection-sampling text clauses can exceed 1 hour on `adult`, separate timing of training, generation, and sampling is in progress to confirm the final recommended `adult` epoch budget and measured runtime table.
+

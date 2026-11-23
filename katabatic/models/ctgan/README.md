@@ -95,3 +95,11 @@ Where Katabatic's `CTGANModel` differs from the NeurIPS 2019 paper and `sdv-dev/
 - **Quantile normalization instead of VGM mode-specific normalization**: Continuous columns are transformed to a Gaussian distribution via `QuantileTransformer(output_distribution="normal")` rather than fitting a Variational Gaussian Mixture Model per continuous column.
 - **Empirical condition sampling instead of log-frequency training-by-sampling**: Condition vectors during training and sampling are drawn from the empirical category frequencies of a uniformly chosen categorical column (`sample_conditions`), without a cross-entropy conditional generator loss term or PacGAN input packing.
 - **DataLoader drop-last behavior**: The PyTorch `DataLoader` uses `drop_last=True` with `batch_size=512` by default; for small datasets (`< 512` rows), pass a smaller `batch_size` (e.g., `batch_size=32` or `64`) so batches are not dropped during epoch loops.
+
+## Benchmark Protocol & Runtime Notes
+
+Under the Katabatic benchmark protocol (`benchmarks/protocol.py` / `benchmarks/examples/ctgan/`):
+- **Policy**: `standard` — `epochs = epochs_for(dataset)` (`100` epochs for small/medium datasets: `car`, `nursery`, `magic`; `150` epochs for large datasets: `adult`, `shuttle`).
+- **Seed & Split**: `seed = 42` (`SEED`), 80/20 stratified train/test split (`TEST_SIZE = 0.2`), `batch_size = 512`.
+- **Measured Runtimes & Benchmark Scores**: Recorded via `benchmarks/runtime.py` and `benchmarks/run_all.py` across `car`, `adult`, `magic`, `nursery`, and `shuttle` (table populated from consolidated `benchmarks/results/` leaderboard output).
+
