@@ -46,11 +46,20 @@ class StabilityEvaluation(Evaluation):
         categorical_cols: list = None,
         continuous_cols: list = None,
     ):
+        if real_data is None or not isinstance(real_data, pd.DataFrame) or real_data.empty:
+            raise ValueError("real_data must be a non-empty pandas DataFrame.")
+
+        if n_runs is None or n_runs < 1:
+            raise ValueError(f"n_runs must be at least 1 (got {n_runs}).")
+
+        if seeds is not None and len(seeds) == 0:
+            raise ValueError("seeds cannot be empty when provided.")
+
         super().__init__(real_data=real_data, synthetic_data=None)
         self.model = model
         self.n_samples = n_samples or len(real_data)
         self.n_runs = n_runs
-        self.seeds = seeds or list(range(n_runs))
+        self.seeds = list(seeds) if seeds is not None else list(range(n_runs))
         self.categorical_cols = categorical_cols
         self.continuous_cols = continuous_cols
 
@@ -59,9 +68,20 @@ class StabilityEvaluation(Evaluation):
                 f"len(seeds)={len(self.seeds)} must equal n_runs={self.n_runs}."
             )
 
+        self.seed_supported: bool = True
+        self.failed_runs: list[dict] = []
+        self.warnings: list[str] = []
+
     def evaluate(self) -> dict:
         per_run = {"fidelity": [], "diversity": []}
         run_details = []
+        self.seed_supported = True
+        self.failed_runs = []
+        self.warnings = []
+        self._unseeded_warned = False
+
+        seen_seed_frames: dict[int, pd.DataFrame] = {}
+        same_seed_reproducible: bool | None = None
 
         for i, seed in enumerate(self.seeds):
             print(f"  [Stability] run {i + 1}/{self.n_runs}  (seed={seed})")
@@ -71,7 +91,38 @@ class StabilityEvaluation(Evaluation):
                 print(
                     f"  [Stability] WARNING: sample() returned None for seed={seed}, skipping run."
                 )
+                if not any(f["seed"] == seed and f["run"] == i + 1 for f in self.failed_runs):
+                    self.failed_runs.append(
+                        {
+                            "run": i + 1,
+                            "seed": seed,
+                            "error": "sample() returned None",
+                        }
+                    )
                 continue
+
+            if synth.empty:
+                msg = f"sample() returned an empty DataFrame for seed={seed}"
+                print(f"  [Stability] WARNING: {msg}, skipping run.")
+                self.failed_runs.append({"run": i + 1, "seed": seed, "error": msg})
+                self.warnings.append(msg)
+                continue
+
+            if seed in seen_seed_frames:
+                matches_prev = seen_seed_frames[seed].equals(synth)
+                if same_seed_reproducible is None:
+                    same_seed_reproducible = matches_prev
+                else:
+                    same_seed_reproducible = bool(same_seed_reproducible and matches_prev)
+                if not matches_prev:
+                    warn_msg = (
+                        f"Seed {seed} produced different synthetic data across repeated runs."
+                    )
+                    print(f"  [Stability] WARNING: {warn_msg}")
+                    if warn_msg not in self.warnings:
+                        self.warnings.append(warn_msg)
+            else:
+                seen_seed_frames[seed] = synth.copy()
 
             fid_result = FidelityEvaluation(
                 self.real_data,
@@ -98,7 +149,20 @@ class StabilityEvaluation(Evaluation):
             )
 
         if not run_details:
-            return {"stability_score": 0.0, "error": "All sampling runs failed."}
+            return {
+                "stability_score": 0.0,
+                "error": "All sampling runs failed.",
+                "seed_supported": self.seed_supported,
+                "failed_runs": list(self.failed_runs),
+                "warnings": list(self.warnings),
+            }
+
+        if len(run_details) == 1:
+            single_warn = (
+                "Only 1 sampling run completed; multi-seed variance cannot be estimated."
+            )
+            if single_warn not in self.warnings:
+                self.warnings.append(single_warn)
 
         mean_scores = {
             dim: round(float(np.mean(vals)), 4) for dim, vals in per_run.items() if vals
@@ -118,7 +182,12 @@ class StabilityEvaluation(Evaluation):
             "std_scores": std_scores,
             "avg_std": round(avg_std, 4),
             "stability_score": stability_score,
+            "seed_supported": self.seed_supported,
+            "failed_runs": list(self.failed_runs),
+            "warnings": list(self.warnings),
         }
+        if same_seed_reproducible is not None:
+            results["same_seed_reproducible"] = same_seed_reproducible
 
         self._print_summary(results)
         return results
@@ -128,27 +197,41 @@ class StabilityEvaluation(Evaluation):
         Call model.sample(n_samples, seed=seed) and return a DataFrame
         aligned to real_data columns.
         """
+        run_idx = len(self.failed_runs) + 1
         try:
             result = self.model.sample(self.n_samples, seed=seed)
-        except TypeError:
+        except TypeError as exc:
             # Model does not support seed argument — fall back to unseeded call.
             # All runs will be identical on deterministic models, producing std=0
-            # and a misleadingly perfect stability score. A warning is printed once.
+            # and a misleadingly perfect stability score. A warning is recorded and printed once.
+            self.seed_supported = False
             if not getattr(self, "_unseeded_warned", False):
+                warn_msg = (
+                    "model.sample() does not accept a 'seed' argument. "
+                    "All stability runs use unseeded sampling."
+                )
                 print(
                     "  [Stability] WARNING: model.sample() does not accept a 'seed' argument. "
                     "All stability runs will use unseeded sampling. On deterministic models this "
                     "produces std=0 and a stability_score=1.0 that does not reflect true stability. "
                     "Implement sample(n, seed=int) in your model for meaningful stability results."
                 )
+                if warn_msg not in self.warnings:
+                    self.warnings.append(warn_msg)
                 self._unseeded_warned = True
             try:
                 result = self.model.sample(self.n_samples)
             except Exception as e:
-                print(f"  [Stability] model.sample() raised: {e}")
+                err_msg = f"model.sample() raised: {e}"
+                print(f"  [Stability] {err_msg}")
+                self.failed_runs.append({"run": run_idx, "seed": seed, "error": str(e)})
+                self.warnings.append(err_msg)
                 return None
         except Exception as e:
-            print(f"  [Stability] model.sample() raised: {e}")
+            err_msg = f"model.sample() raised: {e}"
+            print(f"  [Stability] {err_msg}")
+            self.failed_runs.append({"run": run_idx, "seed": seed, "error": str(e)})
+            self.warnings.append(err_msg)
             return None
 
         if result is None:
