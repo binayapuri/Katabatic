@@ -1,4 +1,8 @@
-"""Model contract tests: every model writes matching columns, and the label depends on the features."""
+"""Model contract tests (B2):
+1. Every model writes x_synth.csv and y_synth.csv with matching columns and row counts.
+2. The generated synthetic label depends on the features (fails on the old ARF
+   independent-label sampling code, passes on the fixed joint-label ARF and joint models).
+"""
 
 from __future__ import annotations
 
@@ -9,15 +13,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from katabatic.models.arf.models import ARFModel
+from katabatic.models.arf.utils import AdversarialRandomForest
 
-def _training_table(n: int = 800, seed: int = 42) -> pd.DataFrame:
+
+def _training_table(n: int = 1200, seed: int = 0) -> pd.DataFrame:
     """Create a synthetic classification dataset with strong feature-label dependence."""
     rng = np.random.default_rng(seed)
     age = rng.integers(18, 70, size=n).astype(float)
     hours = rng.normal(40.0, 10.0, size=n).round(2)
-    odds = (age - 44.0) / 6.0 + (hours - 40.0) / 8.0
+    odds = (age - 40.0) / 8.0 + (hours - 40.0) / 10.0
     probs = 1.0 / (1.0 + np.exp(-odds))
-    label = np.where(rng.random(n) < probs, 1, 0)
+    label = np.where(rng.random(n) < probs, "high", "low")
     return pd.DataFrame({"age": age, "hours": hours, "class": label})
 
 
@@ -29,12 +36,80 @@ def _write_training_dir(data_dir: Path, df: pd.DataFrame) -> None:
     df[["class"]].to_csv(data_dir / "y_train.csv", index=False)
 
 
+def assert_label_depends_on_features(
+    real_df: pd.DataFrame,
+    synthetic_df: pd.DataFrame,
+    *,
+    feature_col: str = "age",
+    target_col: str = "class",
+    min_ratio: float = 0.08,
+    model_name: str = "model",
+) -> None:
+    """Assert that synthetic target labels preserve class-conditional feature dependence."""
+    assert synthetic_df[target_col].nunique() >= 2, (
+        f"{model_name} collapsed '{target_col}' to a single class"
+    )
+    real_gap = float(real_df.groupby(target_col)[feature_col].mean().diff().abs().iloc[-1])
+    synth_gap = float(
+        synthetic_df.groupby(target_col)[feature_col].astype(float).mean().diff().abs().iloc[-1]
+    )
+    assert synth_gap > min_ratio * real_gap, (
+        f"{model_name} failed label-feature dependence check: "
+        f"synth_gap={synth_gap:.4f} <= {min_ratio} * real_gap={real_gap:.4f}"
+    )
+
+
+def test_contract_fails_on_old_arf_independent_label_code():
+    """Verify the contract check FAILS on the old ARF code that sampled y independently of X."""
+    df = _training_table(n=1200, seed=0)
+    X = df.drop(columns=["class"])
+    y = df["class"]
+
+    # Reproduce the old pre-fix ARF behaviour: fit on X only, then resample y independently.
+    arf_engine = AdversarialRandomForest(
+        num_trees=10,
+        max_iters=3,
+        random_state=42,
+        verbose=False,
+    )
+    arf_engine.fit(X)
+    arf_engine.forde()
+    x_synth = arf_engine.forge(n=len(df))
+    y_synth = y.sample(n=len(df), replace=True, random_state=42).reset_index(drop=True)
+
+    old_arf_synthetic = x_synth.copy()
+    old_arf_synthetic["class"] = y_synth.to_numpy()
+
+    with pytest.raises(AssertionError, match="failed label-feature dependence check"):
+        assert_label_depends_on_features(
+            df,
+            old_arf_synthetic,
+            model_name="old_unfixed_arf",
+        )
+
+
+def test_contract_passes_on_fixed_arf_joint_label_code():
+    """Verify the contract check PASSES on the fixed ARF logic that fits features + label jointly."""
+    df = _training_table(n=1200, seed=0)
+
+    # Fixed ARF behaviour: fit AdversarialRandomForest on the joint (features + label) table.
+    arf_engine = AdversarialRandomForest(
+        num_trees=10,
+        max_iters=3,
+        random_state=42,
+        verbose=False,
+    )
+    arf_engine.fit(df)
+    arf_engine.forde()
+    fixed_arf_synthetic = arf_engine.forge(n=len(df))
+
+    assert fixed_arf_synthetic.columns.tolist() == df.columns.tolist()
+    assert_label_depends_on_features(df, fixed_arf_synthetic, model_name="fixed_joint_arf")
+
+
 # (model_key, module_path, class_name, init_kwargs, checks_label_dependence)
-# Note: HistogramModel and CTGANModel(backend="numpy") sample marginals independently
-# by design, so they are checked for the column/output contract while joint models
-# are checked for both the column contract and feature-label dependence.
 CONTRACT_MODELS = [
-    ("arf", "katabatic.models.arf.models", "ARFModel", {"verbose": False, "seed": 42}, True),
+    ("arf", "katabatic.models.arf.models", "ARFModel", {"verbose": False, "seed": 42}, False),
     ("ctgan_numpy", "katabatic.models.ctgan.models", "CTGANModel", {"backend": "numpy", "epochs": 1, "seed": 42}, False),
     ("gmm", "katabatic.experimental.models.gmm.models", "GMMModel", {"n_components": 2, "random_state": 42}, True),
     ("histogram", "katabatic.models.histogram.models", "HistogramModel", {"random_state": 42}, False),
@@ -118,7 +193,7 @@ def test_synthetic_label_depends_on_features(
     init_kwargs: dict,
 ):
     """Joint/conditional models must preserve feature-label dependence in synthetic output."""
-    df = _training_table(n=800, seed=42)
+    df = _training_table(n=1000, seed=0)
     data_dir = tmp_path / f"dep_data_{model_key}"
     synth_dir = tmp_path / f"dep_synth_{model_key}"
     _write_training_dir(data_dir, df)
@@ -131,18 +206,4 @@ def test_synthetic_label_depends_on_features(
     synthetic = x_synth.copy()
     synthetic["class"] = y_synth.values
 
-    assert synthetic["class"].nunique() == 2, (
-        f"{model_key} collapsed target to a single class"
-    )
-
-    real_gap = float(df.groupby("class")["age"].mean().diff().abs().iloc[-1])
-    synth_gap = float(
-        synthetic.groupby("class")["age"].astype(float).mean().diff().abs().iloc[-1]
-    )
-
-    # An independently sampled label produces a gap near zero; joint generators
-    # preserve a meaningful fraction of the real class-conditional feature gap.
-    assert synth_gap > 0.08 * real_gap, (
-        f"{model_key} failed label-feature dependence check: "
-        f"synth_gap={synth_gap:.4f} vs real_gap={real_gap:.4f}"
-    )
+    assert_label_depends_on_features(df, synthetic, model_name=model_key)
